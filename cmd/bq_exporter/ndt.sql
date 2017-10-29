@@ -11,19 +11,25 @@ SELECT
   CASE 
     WHEN connection_spec.data_direction == 0 THEN "c2s"
     WHEN connection_spec.data_direction == 1 THEN "s2c"
-    ELSE "Whoopload" END as label_direction,
+    ELSE "error"
+    END as label_direction,
 
-    REGEXP_EXTRACT(task_filename, r'gs://.*-(mlab[1-4]-[a-z]{3}[0-9]+)-ndt.*.tgz') AS label_server,
+    CONCAT(
+        REPLACE(
+            REGEXP_EXTRACT(task_filename,
+                           r'gs://.*-(mlab[1-4]-[a-z]{3}[0-9]+)-ndt.*.tgz'),
+            "-",
+            "."),
+        ".measurement-lab.org") AS label_machine,
+
     count(*) as value
 
 FROM
     [measurement-lab:public.ndt]
 
 WHERE
-    log_time > TIMESTAMP("2017-10-06")
+    TIMESTAMP_TO_USEC(log_time) > UTC_USEC_TO_HOUR(TIMESTAMP_TO_USEC(CURRENT_TIMESTAMP())) - (24 * 60 * 60 * 1000000)
+AND TIMESTAMP_TO_USEC(log_time) < UTC_USEC_TO_HOUR(TIMESTAMP_TO_USEC(CURRENT_TIMESTAMP())) - (23 * 60 * 60 * 1000000)
 
-
-GROUP BY label_server, label_direction
+GROUP BY label_machine, label_direction
 ORDER BY value
--- GROUP BY day_of_week, server
--- ORDER BY day_of_week, count
