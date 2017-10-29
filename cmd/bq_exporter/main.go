@@ -21,7 +21,7 @@ import (
 var (
 	querySources = []string{}
 	project      = flag.String("project", "", "GCP project name.")
-	refresh      = flag.Duration("refresh", time.Minute, "Number of seconds between refreshing.")
+	refresh      = flag.Duration("refresh", 15*time.Minute, "Number of seconds between refreshing.")
 )
 
 // TODO: can we use prometheus.Metric types?
