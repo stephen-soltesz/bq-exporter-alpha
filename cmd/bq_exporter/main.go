@@ -117,16 +117,23 @@ func createGauge(name, help string, labels []string) *prometheus.GaugeVec {
 	return g
 }
 
+func sleepUntilNext(d time.Duration) {
+	// Truncate the current time to a multiple of interval. Then add the
+	// interval to move the time into the future.
+	next := time.Now().Truncate(d).Add(d)
+	// Wait until we are aligned on the next interval.
+	time.Sleep(time.Until(next))
+}
+
 func main() {
 	flag.Parse()
 	var bqGauges = []*prometheus.GaugeVec{}
 	var metricNames = []string{}
 	var queryFiles = []string{}
-	var start time.Time
 
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		log.Fatal(http.ListenAndServe(":9393", nil))
+		log.Fatal(http.ListenAndServe(":9050", nil))
 	}()
 
 	// TODO: we must create a guauge after runnign the query once to extract
@@ -138,9 +145,8 @@ func main() {
 		bqGauges = append(bqGauges, nil)
 	}
 
-	for ; ; time.Sleep(*refresh - time.Since(start)) {
-		start = time.Now()
-		log.Printf("Starting a new round at: %s", start)
+	for ; ; sleepUntilNext(*refresh) {
+		log.Printf("Starting a new round at: %s", time.Now())
 
 		for i := range queryFiles {
 			log.Printf("Running query for %s", queryFiles[i])
