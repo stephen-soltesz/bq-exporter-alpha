@@ -36,6 +36,31 @@ func init() {
 	flag.StringArrayVar(&querySources, "query", nil, "Name of file with query string.")
 }
 
+type bqCollector struct {
+	desc    *prometheus.Desc
+	metrics []Metric
+}
+
+// TODO: accept name, query string, run query, get labels.
+func NewBQCollector() *bqCollector {
+	return &bqCollector{
+		prometheus.NewDesc(
+			"bq_ndt_tests",
+			"things",
+			[]string{"direction", "machine"},
+			nil),
+	}
+}
+
+func (bq *bqCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- bq.desc
+}
+
+func (bq *bqCollector) Collect(ch chan<- prometheus.Metric) {
+	// func MustNewConstMetric(desc *Desc, valueType ValueType, value float64, labelValues ...string) Metric
+	ch <- prometheus.MustNewConstMetric(bq.desc, prometheus.GaugeValue, 10.0, "c2s", "mlab1.foo01.measurement-lab.org")
+}
+
 func runQuery(file string) []Metric {
 	var metrics = []Metric{}
 	ctx := context.Background()
@@ -132,8 +157,9 @@ func main() {
 	var queryFiles = []string{}
 
 	go func() {
+		prometheus.MustRegister(NewBQCollector())
 		http.Handle("/metrics", promhttp.Handler())
-		log.Fatal(http.ListenAndServe(":9050", nil))
+		log.Fatal(http.ListenAndServe(":9393", nil))
 	}()
 
 	// TODO: we must create a guauge after runnign the query once to extract
