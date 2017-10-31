@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	flag "github.com/spf13/pflag"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"cloud.google.com/go/bigquery"
 	"golang.org/x/net/context"
@@ -43,19 +44,21 @@ type bqCollector struct {
 	name   string
 	query  string
 
+	valType prometheus.ValueType
 	desc    *prometheus.Desc
+
 	metrics []Metric
 	mux     sync.Mutex
 }
 
-// TODO: accept name, query string, run query, get labels.
-func NewBQCollector(client *bigquery.Client, metricName, query string) *bqCollector {
+func NewBQCollector(client *bigquery.Client, valType prometheus.ValueType, metricName, query string) *bqCollector {
 	query = strings.Replace(query, "UNIX_START_TIME", fmt.Sprintf("%d", time.Now().UTC().Unix()), -1)
 	fmt.Println(query)
 	return &bqCollector{
 		client,
 		metricName,
 		query,
+		valType,
 		nil,
 		nil,
 		sync.Mutex{},
@@ -170,7 +173,7 @@ func filenameToMetric(filename string) string {
 	return strings.TrimSuffix(fname, filepath.Ext(fname))
 }
 
-func createCollector(filename string) *bqCollector {
+func createCollector(typeName, filename string) *bqCollector {
 	query, err := ioutil.ReadFile(filename)
 	if err != nil {
 		log.Fatal(err)
@@ -182,7 +185,16 @@ func createCollector(filename string) *bqCollector {
 		log.Fatal(err)
 	}
 
-	return NewBQCollector(client, filenameToMetric(filename), string(query))
+	var v prometheus.ValueType
+	if typeName == "collector" {
+		v = prometheus.CounterValue
+	} else if typeName == "gauge" {
+		v = prometheus.GaugeValue
+	} else {
+		v = prometheus.UntypedValue
+	}
+
+	return NewBQCollector(client, v, filenameToMetric(filename), string(query))
 }
 
 func main() {
@@ -203,7 +215,7 @@ func main() {
 		keyVal := strings.SplitN(querySources[i], "=", 2)
 		metricNames = append(metricNames, keyVal[0])
 		queryFiles = append(queryFiles, keyVal[1])
-		collectors = append(collectors, createCollector(keyVal[1]))
+		collectors = append(collectors, createCollector(keyVal[0], keyVal[1]))
 		bqGauges = append(bqGauges, nil)
 	}
 
