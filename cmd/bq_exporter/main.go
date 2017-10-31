@@ -6,8 +6,10 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/bigquery"
@@ -37,53 +39,54 @@ func init() {
 }
 
 type bqCollector struct {
+	client *bigquery.Client
+	name   string
+	query  string
+
 	desc    *prometheus.Desc
 	metrics []Metric
+	mux     sync.Mutex
 }
 
 // TODO: accept name, query string, run query, get labels.
-func NewBQCollector() *bqCollector {
+func NewBQCollector(client *bigquery.Client, metricName, query string) *bqCollector {
+	query = strings.Replace(query, "UNIX_START_TIME", fmt.Sprintf("%d", time.Now().UTC().Unix()), -1)
+	fmt.Println(query)
 	return &bqCollector{
-		prometheus.NewDesc(
-			"bq_ndt_tests",
-			"things",
-			[]string{"direction", "machine"},
-			nil),
+		client,
+		metricName,
+		query,
+		nil,
+		nil,
+		sync.Mutex{},
 	}
 }
 
 func (bq *bqCollector) Describe(ch chan<- *prometheus.Desc) {
+	fmt.Println("Describe")
 	ch <- bq.desc
 }
 
 func (bq *bqCollector) Collect(ch chan<- prometheus.Metric) {
-	// func MustNewConstMetric(desc *Desc, valueType ValueType, value float64, labelValues ...string) Metric
-	ch <- prometheus.MustNewConstMetric(bq.desc, prometheus.GaugeValue, 10.0, "c2s", "mlab1.foo01.measurement-lab.org")
+	fmt.Println("Collect")
+	bq.mux.Lock()
+	defer bq.mux.Unlock()
+	for j := range bq.metrics {
+		log.Printf("Updating gauge for: %#v", bq.metrics[j])
+		ch <- prometheus.MustNewConstMetric(
+			bq.desc, prometheus.GaugeValue, bq.metrics[j].value, bq.metrics[j].values...)
+	}
 }
 
-func runQuery(file string) []Metric {
-	var metrics = []Metric{}
-	ctx := context.Background()
-	client, err := bigquery.NewClient(ctx, *project)
-	if err != nil {
-		// TODO: Handle error.
-		log.Println(err)
-		return metrics
-	}
+func (bq *bqCollector) runQuery() {
+	metrics := []Metric{}
 
-	// TODO: read file once.
-	b, err := ioutil.ReadFile(file)
-	if err != nil {
-		log.Println(err)
-		return metrics
-	}
-
-	q := client.Query((string)(b))
+	q := bq.client.Query(bq.query)
 	// TODO: check query string for sql type.
 	q.QueryConfig.UseLegacySQL = true
 	// TODO: evaluate query as a template.
 
-	it, err := q.Read(ctx)
+	it, err := q.Read(context.Background())
 	if err != nil {
 		// TODO: Handle error.
 		log.Fatal(err)
@@ -101,10 +104,22 @@ func runQuery(file string) []Metric {
 		}
 
 		metrics = append(metrics, toMetric(row))
-		fmt.Printf("%#v\n", row)
+		// fmt.Printf("%#v\n", row)
 	}
-
-	return metrics
+	if bq.desc == nil {
+		if len(metrics) > 0 {
+			bq.desc = prometheus.NewDesc(
+				bq.name,
+				"help text",
+				metrics[0].labels,
+				nil)
+		} else {
+			return
+		}
+	}
+	bq.mux.Lock()
+	defer bq.mux.Unlock()
+	bq.metrics = metrics
 }
 
 func toMetric(row map[string]bigquery.Value) Metric {
@@ -150,14 +165,34 @@ func sleepUntilNext(d time.Duration) {
 	time.Sleep(time.Until(next))
 }
 
+func filenameToMetric(filename string) string {
+	fname := filepath.Base(filename)
+	return strings.TrimSuffix(fname, filepath.Ext(fname))
+}
+
+func createCollector(filename string) *bqCollector {
+	query, err := ioutil.ReadFile(filename)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	ctx := context.Background()
+	client, err := bigquery.NewClient(ctx, *project)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return NewBQCollector(client, filenameToMetric(filename), string(query))
+}
+
 func main() {
 	flag.Parse()
 	var bqGauges = []*prometheus.GaugeVec{}
 	var metricNames = []string{}
 	var queryFiles = []string{}
+	var collectors = []*bqCollector{}
 
 	go func() {
-		prometheus.MustRegister(NewBQCollector())
 		http.Handle("/metrics", promhttp.Handler())
 		log.Fatal(http.ListenAndServe(":9393", nil))
 	}()
@@ -168,27 +203,21 @@ func main() {
 		keyVal := strings.SplitN(querySources[i], "=", 2)
 		metricNames = append(metricNames, keyVal[0])
 		queryFiles = append(queryFiles, keyVal[1])
+		collectors = append(collectors, createCollector(keyVal[1]))
 		bqGauges = append(bqGauges, nil)
 	}
 
-	for ; ; sleepUntilNext(*refresh) {
+	for i := range collectors {
+		collectors[i].runQuery()
+		prometheus.MustRegister(collectors[i])
+	}
+
+	for sleepUntilNext(*refresh); ; sleepUntilNext(*refresh) {
 		log.Printf("Starting a new round at: %s", time.Now())
 
 		for i := range queryFiles {
 			log.Printf("Running query for %s", queryFiles[i])
-			metrics := runQuery(queryFiles[i])
-			if len(metrics) == 0 {
-				log.Printf("Got no metrics")
-				continue
-			}
-			if bqGauges[i] == nil {
-				log.Printf("Creating gauge for: %#v", metrics[0])
-				bqGauges[i] = createGauge(metricNames[i], queryFiles[i], metrics[0].labels)
-			}
-			for j := range metrics {
-				log.Printf("Updating gauge for: %#v", metrics[j])
-				bqGauges[i].WithLabelValues(metrics[j].values...).Set(metrics[j].value)
-			}
+			collectors[i].runQuery()
 		}
 	}
 }
