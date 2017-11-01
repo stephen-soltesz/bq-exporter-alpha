@@ -44,7 +44,7 @@ func fileToMetric(filename string) string {
 	return strings.TrimSuffix(fname, filepath.Ext(fname))
 }
 
-func createCollector(typeName, filename string, refresh time.Duration) *bq.Collector {
+func registerCollector(typeName, filename string, refresh time.Duration) *bq.Collector {
 	queryBytes, err := ioutil.ReadFile(filename)
 	if err != nil {
 		log.Fatal(err)
@@ -69,37 +69,34 @@ func createCollector(typeName, filename string, refresh time.Duration) *bq.Colle
 	query = strings.Replace(query, "UNIX_START_TIME", fmt.Sprintf("%d", time.Now().UTC().Unix()), -1)
 	query = strings.Replace(query, "REFRESH_RATE_SEC", fmt.Sprintf("%d", int(refresh.Seconds())), -1)
 
-	return bq.NewCollector(client, v, fileToMetric(filename), string(query))
+	c := bq.NewCollector(bq.NewQueryRunner(client), v, fileToMetric(filename), string(query))
+	log.Println("Initializing collector:", c)
+	prometheus.MustRegister(c)
+	return c
+}
+
+func updatePeriodically(collectors []*bq.Collector, refresh time.Duration) {
+	for sleepUntilNext(refresh); ; sleepUntilNext(refresh) {
+		log.Printf("Starting a new round at: %s", time.Now())
+		for i := range collectors {
+			log.Printf("Running query for %s", collectors[i])
+			collectors[i].Update()
+			log.Printf("Done")
+		}
+	}
 }
 
 func main() {
 	flag.Parse()
 	var collectors = []*bq.Collector{}
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		log.Fatal(http.ListenAndServe(":9393", nil))
-	}()
-
 	for i := range querySources {
 		keyVal := strings.SplitN(querySources[i], "=", 2)
-		collectors = append(collectors, createCollector(keyVal[0], keyVal[1], *refresh))
+		collectors = append(collectors, registerCollector(keyVal[0], keyVal[1], *refresh))
 	}
 
-	// We must run the query once before registering the collector so that we
-	// can create a prometheus metric description at registration time.
-	for i := range collectors {
-		log.Println("Initializing collector:", collectors[i])
-		collectors[i].RunQuery()
-		prometheus.MustRegister(collectors[i])
-	}
+	go updatePeriodically(collectors, *refresh)
 
-	for sleepUntilNext(*refresh); ; sleepUntilNext(*refresh) {
-		log.Printf("Starting a new round at: %s", time.Now())
-		for i := range collectors {
-			log.Printf("Running query for %s", collectors[i])
-			collectors[i].RunQuery()
-			log.Printf("Done")
-		}
-	}
+	http.Handle("/metrics", promhttp.Handler())
+	log.Fatal(http.ListenAndServe(":9393", nil))
 }
