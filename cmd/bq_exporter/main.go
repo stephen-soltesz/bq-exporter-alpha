@@ -71,6 +71,7 @@ func registerCollector(typeName, filename string, refresh time.Duration) *bq.Col
 
 	c := bq.NewCollector(bq.NewQueryRunner(client), v, fileToMetric(filename), string(query))
 	log.Println("Initializing collector:", c)
+	// TODO: do not use MustRegister, handle register errors.
 	prometheus.MustRegister(c)
 	return c
 }
