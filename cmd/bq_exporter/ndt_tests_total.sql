@@ -19,8 +19,7 @@ FROM
     [measurement-lab:public.ndt]
 
 WHERE
-    -- TIMESTAMP_TO_USEC(log_time) > ((INTEGER(UNIX_START_TIME) / (15 * 60)) * (15 * 60) - (24 * 60 * 60)) * 1000000
-    TIMESTAMP_TO_USEC(log_time) > ((INTEGER(UNIX_START_TIME) / (15 * 60)) * (15 * 60) - (3 * 60 * 60)) * 1000000
+    TIMESTAMP_TO_USEC(log_time) > ((INTEGER(UNIX_START_TIME) / (REFRESH_RATE_SEC)) * (REFRESH_RATE_SEC) - (24 * 60 * 60)) * 1000000
 
 GROUP BY label_machine, label_direction
 ORDER BY value
