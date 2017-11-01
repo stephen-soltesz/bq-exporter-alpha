@@ -2,7 +2,6 @@ package bq
 
 import (
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -10,19 +9,10 @@ import (
 	"cloud.google.com/go/bigquery"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"golang.org/x/net/context"
-	"google.golang.org/api/iterator"
 )
 
-// TODO: can we use prometheus.Metric types?
-type Metric struct {
-	labels []string
-	values []string
-	value  float64
-}
-
 type Collector struct {
-	client *bigquery.Client
+	runner QueryRunner
 	name   string
 	query  string
 
@@ -33,84 +23,82 @@ type Collector struct {
 	mux     sync.Mutex
 }
 
-func NewCollector(client *bigquery.Client, valType prometheus.ValueType, metricName, query string) *Collector {
-	fmt.Println(query)
+// metric holds raw data from query results needed to create a prometheus.Metric.
+type Metric struct {
+	labels []string
+	values []string
+	value  float64
+}
+
+// NewCollector creates a new BigQuery Collector instance.
+func NewCollector(runner QueryRunner, valType prometheus.ValueType, metricName, query string) *Collector {
 	return &Collector{
-		client,
-		metricName,
-		query,
-		valType,
-		nil,
-		nil,
-		sync.Mutex{},
+		runner:  runner,
+		name:    metricName,
+		query:   query,
+		valType: valType,
+		desc:    nil,
+		metrics: nil,
+		mux:     sync.Mutex{},
 	}
 }
 
+// Describe satisfies the prometheus.Collector interface. Describe is called
+// immediately after registering the collector.
 func (bq *Collector) Describe(ch chan<- *prometheus.Desc) {
-	fmt.Println("Describe")
+	if bq.desc == nil {
+		// TODO: collect metrics for query exec time.
+		bq.Update()
+		bq.setDesc()
+	}
+	// NOTE: if Update returns no metrics, this will fail.
 	ch <- bq.desc
 }
 
+// Collect satisfies the prometheus.Collector interface. Collect reports values
+// from cached metrics.
 func (bq *Collector) Collect(ch chan<- prometheus.Metric) {
-	fmt.Println("Collect")
 	bq.mux.Lock()
 	defer bq.mux.Unlock()
-	for j := range bq.metrics {
-		log.Printf("Updating gauge for: %#v", bq.metrics[j])
+
+	for i := range bq.metrics {
 		ch <- prometheus.MustNewConstMetric(
-			bq.desc, prometheus.GaugeValue, bq.metrics[j].value, bq.metrics[j].values...)
+			bq.desc, bq.valType, bq.metrics[i].value, bq.metrics[i].values...)
 	}
 }
 
+// String satisfies the Stringer interface. String returns the metric name.
 func (bq *Collector) String() string {
 	return bq.name
 }
 
-func (bq *Collector) RunQuery() {
-	metrics := []Metric{}
-
-	q := bq.client.Query(bq.query)
-	// TODO: check query string for sql type.
-	q.QueryConfig.UseLegacySQL = true
-	// TODO: evaluate query as a template.
-
-	it, err := q.Read(context.Background())
+// Update runs the collector query and atomically updates the cached metrics.
+// Update is called automaticlly after the collector is registered.
+func (bq *Collector) Update() error {
+	metrics, err := bq.runner.Query(bq.query)
 	if err != nil {
-		// TODO: Handle error.
-		log.Fatal(err)
+		return err
 	}
-
-	for {
-		var row map[string]bigquery.Value
-		err := it.Next(&row)
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			// TODO: Handle error.
-			log.Fatal(err)
-		}
-
-		metrics = append(metrics, toMetric(row))
-	}
-	if bq.desc == nil {
-		// The query may return no results.
-		if len(metrics) > 0 {
-			bq.desc = prometheus.NewDesc(
-				bq.name,
-				"help text",
-				metrics[0].labels,
-				nil)
-		} else {
-			return
-		}
-	}
+	// Swap the cached metrics.
 	bq.mux.Lock()
 	defer bq.mux.Unlock()
 	bq.metrics = metrics
+	return nil
 }
 
-func toMetric(row map[string]bigquery.Value) Metric {
+func (bq *Collector) setDesc() {
+	// The query may return no results.
+	if len(bq.metrics) > 0 {
+		// TODO: allow passing meaningful help text.
+		bq.desc = prometheus.NewDesc(bq.name, "help text", bq.metrics[0].labels, nil)
+	} else {
+		// TODO: this is a problem.
+		return
+	}
+}
+
+// rowToMetric converts a bigquery result row to a bq.Metric
+func rowToMetric(row map[string]bigquery.Value) Metric {
 	m := Metric{}
 	// Since `range` does not guarantee map key order, we must extract, sort
 	// and then extract values.
