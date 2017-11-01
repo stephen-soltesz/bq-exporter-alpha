@@ -1,12 +1,8 @@
+// bq
 package bq
 
 import (
-	"fmt"
-	"sort"
-	"strings"
 	"sync"
-
-	"cloud.google.com/go/bigquery"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -95,28 +91,4 @@ func (bq *Collector) setDesc() {
 		// TODO: this is a problem.
 		return
 	}
-}
-
-// rowToMetric converts a bigquery result row to a bq.Metric
-func rowToMetric(row map[string]bigquery.Value) Metric {
-	m := Metric{}
-	// Since `range` does not guarantee map key order, we must extract, sort
-	// and then extract values.
-	for k, v := range row {
-		if strings.HasPrefix(k, "label_") {
-			m.labels = append(m.labels, strings.TrimPrefix(k, "label_"))
-		}
-		if k == "value" {
-			// TODO: type cast is fragile. check for int or float or error.
-			m.value = (float64)(v.(int64))
-		}
-	}
-	sort.Strings(m.labels)
-
-	for i := range m.labels {
-		// TODO: check type assertion.
-		key := fmt.Sprintf("label_%s", m.labels[i])
-		m.values = append(m.values, row[key].(string))
-	}
-	return m
 }
