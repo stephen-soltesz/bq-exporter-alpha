@@ -31,7 +31,7 @@ func (qr *queryRunnerImpl) Query(query string) ([]Metric, error) {
 	q := qr.client.Query(query)
 
 	// TODO: check query string for SQL type.
-	q.QueryConfig.UseStandardSQL = false
+	q.QueryConfig.UseLegacySQL = true
 
 	// TODO: add context timeout.
 	it, err := q.Read(context.Background())
